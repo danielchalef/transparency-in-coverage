@@ -32,9 +32,11 @@ def import_billing_codes(filename):
     return codes
 
 
-def import_set(filename, ints=True):
+def import_set(filename, ints=True, header=False):
     with open(filename, "r") as f:
         reader = csv.reader(f)
+        if header:
+            next(reader)
         items = set()
         for row in reader:
             item = row[0]
@@ -50,6 +52,7 @@ def clean_url(input_url):
     cleaned_url = (parsed_url[1] + parsed_url[2]).strip()
     return cleaned_url
 
+
 def hashdict(data_dict):
     if not data_dict:
         raise ValueError
@@ -58,6 +61,7 @@ def hashdict(data_dict):
     dict_as_bytes = json.dumps(sorted_tups).encode("utf-8")
     dict_hash = hashlib.sha256(dict_as_bytes).hexdigest()[:16]
     return dict_hash
+
 
 def rows_to_file(rows, output_dir):
     for row in rows:
@@ -111,10 +115,14 @@ def innetwork_to_rows(obj, root_hash_id):
             neg_price_vals = {
                 "billing_class": neg_price["billing_class"],
                 "negotiated_type": neg_price["negotiated_type"],
-                "service_code": sc if (sc := neg_price.get("service_code", None)) else None,
+                "service_code": sc
+                if (sc := neg_price.get("service_code", None))
+                else None,
                 "expiration_date": neg_price["expiration_date"],
                 "additional_information": neg_price.get("additional_information", None),
-                "billing_code_modifier": bcm if (bcm := neg_price.get("billing_code_modifier", None)) else None,
+                "billing_code_modifier": bcm
+                if (bcm := neg_price.get("billing_code_modifier", None))
+                else None,
                 "negotiated_rate": neg_price["negotiated_rate"],
                 "root_hash_id": root_hash_id,
                 "in_network_hash_id": in_network_hash_id,
@@ -163,7 +171,7 @@ def build_provrefs(init_row, parser, npi_list=None):
         if (nprefix, event) == (prefix, "end_array"):
             return builder.value, (nprefix, event, value)
 
-        if nprefix.endswith("npi.item"):
+        if nprefix.endswith("npi.item") and npi_list:
             if value not in npi_list:
                 continue
 
@@ -264,7 +272,7 @@ def build_remote_refs(provrefs, npi_list=None):
 
             for prefix, event, value in parser:
 
-                if prefix.endswith("npi.item"):
+                if prefix.endswith("npi.item") and npi_list:
                     if value not in npi_list:
                         continue
 

@@ -3,6 +3,8 @@ import requests
 import logging
 import ijson
 import gzip
+import io
+from typing import Union
 from urllib.parse import urlparse
 from helpers import (
     hashdict,
@@ -19,10 +21,11 @@ from helpers import (
 LOG = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-file_handler = logging.FileHandler('log.txt', 'a')
+file_handler = logging.FileHandler("log.txt", "a")
 file_handler.setLevel(logging.WARNING)
 
 LOG.addHandler(file_handler)
+
 
 def get_mrfs_from_index(index_file_url):
     """
@@ -70,50 +73,61 @@ def stream_json_to_csv(input_url, output_dir, code_list=None, npi_list=None):
     file
     """
 
-    with requests.get(input_url, stream=True) as r:
+    f = get_file_handle(input_url)
 
-        urlpath = urlparse(input_url).path
+    parser = ijson.parse(f, use_float=True)
 
-        if urlpath.endswith(".json.gz"):
-            f = gzip.GzipFile(fileobj=r.raw)
-        elif urlpath.endswith(".json"):
-            f = r.content
+    root_vals, row = build_root(parser)
+    root_hash_id = hashdict(root_vals)
+    root_vals["root_hash_id"] = root_hash_id
+
+    prefix, event, value = row
+
+    LOG.info("Getting provider references")
+
+    if (prefix, event) == ("provider_references", "start_array"):
+        provrefs, row = build_provrefs(row, parser, npi_list)
+        LOG.info("Getting remote references")
+        provrefs = build_remote_refs(provrefs, npi_list)
+
+        if provrefs:
+            provref_idx = provrefs_to_idx(provrefs)
         else:
-            LOG.warn(f"{input_url} isn't a JSON file")
-            return
+            provref_idx = None
 
-        parser = ijson.parse(f, use_float=True)
+    LOG.info("Building in-network array")
 
-        root_vals, row = build_root(parser)
-        root_hash_id = hashdict(root_vals)
-        root_vals["root_hash_id"] = root_hash_id
+    root_written = False
+    for prefix, event, value in parser:
+        if (prefix, event) == ("in_network.item", "start_map"):
+            row = prefix, event, value
+            innetwork, row = build_innetwork(
+                row, parser, code_list, npi_list, provref_idx
+            )
 
-        prefix, event, value = row
+            if innetwork:
+                innetwork_rows = innetwork_to_rows(innetwork, root_hash_id)
+                rows_to_file(innetwork_rows, output_dir)
 
-        LOG.info("Getting provider references")
+                if not root_written:
+                    rows_to_file([("root", root_vals)], output_dir)
+                    root_written = True
 
-        if (prefix, event) == ("provider_references", "start_array"):
-            provrefs, row = build_provrefs(row, parser, npi_list)
-            LOG.info("Getting remote references")
-            provrefs = build_remote_refs(provrefs, npi_list)
 
-            if provrefs:
-                provref_idx = provrefs_to_idx(provrefs)
-            else:
-                provref_idx = None
+def get_file_handle(url: str) -> Union[gzip.GzipFile, io.BufferedReader, bytes]:
+    """
+    Gets a file handle from a URL or file path, handles gzipped content
+    """
+    urlpath = urlparse(url).path
 
-        LOG.info("Building in-network array")
-
-        root_written = False
-        for prefix, event, value in parser:
-            if (prefix, event) == ("in_network.item", "start_map"):
-                row = prefix, event, value
-                innetwork, row = build_innetwork(row, parser, code_list, npi_list, provref_idx)
-
-                if innetwork:
-                    innetwork_rows = innetwork_to_rows(innetwork, root_hash_id)
-                    rows_to_file(innetwork_rows, output_dir)
-
-                    if not root_written:
-                        rows_to_file([("root", root_vals)], output_dir)
-                        root_written = True
+    if urlpath.startswith("http"):
+        r = requests.get(url, stream=True)
+        if urlpath.endswith(".gz"):
+            return gzip.GzipFile(fileobj=r.raw)
+        else:
+            return r.content
+    else:
+        if urlpath.endswith(".gz"):
+            return gzip.open(url, "rb")
+        else:
+            return open(url, mode="rb")
